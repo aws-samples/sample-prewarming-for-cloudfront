@@ -53,19 +53,22 @@ Parameters:
     Type: String
     Description: >-
       Countries and/or cities whose edge nodes are prewarmed, separated by ';', in any
-      mix. A country selects all its nodes, a city only that city's nodes. Country and
-      city names come from https://www.feitsui.com/en/article/3 ; case, accents and the
-      state suffix are optional (Montreal matches the accented "Montreal, QC" entry).
+      mix. A country selects all its nodes, a city only that city's nodes. Names are
+      those of the edge node snapshot in the Lambda code (see the README); case, accents
+      and the state suffix are optional (Montreal matches the accented "Montreal, QC" entry).
       Example: Tokyo;Germany;United States
     Default: Tokyo;Germany;United States
     AllowedPattern: ".+"
   EdgeLocationsUrl:
     Type: String
     Description: >-
-      JSON list of CloudFront edge nodes, fetched by the Lambda at run time. If it cannot
-      be fetched, the Lambda uses the node snapshot bundled in its code.
-    Default: https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json
-    AllowedPattern: "^https://.+"
+      Optional. Leave empty to use only the edge node snapshot bundled in the Lambda code
+      (no run-time download). Set to an https URL of a JSON edge node list to fetch it at
+      run time instead; the snapshot remains the fallback. See the README for the format
+      and a third-party source.
+    Default: ""
+    AllowedPattern: "^(https://.+)?$"
+    ConstraintDescription: "Empty, or an https:// URL"
   InvalidateBeforePrewarm:
     Type: String
     Description: >-
@@ -77,12 +80,11 @@ Parameters:
     Type: String
     Description: >-
       Maximum number of files prewarmed at the same time (reserved concurrency of the
-      prewarm Lambda). Limits CloudFront API calls, edge traffic and the share of the
+      prewarm Lambda). Caps CloudFront API calls, edge data transfer and the share of the
       account's Lambda concurrency during bulk uploads. Extra events wait in the Lambda
-      queue for up to 6 hours. The account must keep at least 100 unreserved
-      concurrency; if the deployment fails on that, lower the value or leave it empty
-      for no limit.
-    Default: "50"
+      queue and are dropped after 6 hours (see Cost and limits in the README). The
+      account must keep at least 100 unreserved concurrency. Empty removes the cap.
+    Default: "10"
     AllowedPattern: "^([1-9][0-9]{0,3})?$"
     ConstraintDescription: "A number from 1 to 9999, or empty for no limit"
   EventBusName:
@@ -148,6 +150,8 @@ Resources:
                 Action: cloudfront:ListDistributions
                 Resource: "*"
               - Effect: Allow
+                # The Lambda finds each distribution at run time from the CdnUrlPrefixes host
+                # names, so the IDs are not known to this template; scoped to this account.
                 Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
                 Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
 
@@ -201,8 +205,10 @@ Resources:
             FILE_PATTERNS        File name patterns to prewarm, e.g. "*.mp4;*.m3u8". Matched against the
                                  file name (last part of the key), case-insensitive. "*" or unset = all files.
             INVALIDATE_BEFORE_PREWARM  "true" (default) or "false".
-            EDGE_LOCATIONS_URL   JSON list of edge nodes (default: static.cloudping.cloud list). If it
-                                 cannot be fetched, the snapshot bundled below (EDGE_SNAPSHOT) is used.
+            EDGE_LOCATIONS_URL   Optional https URL of a JSON list of edge nodes, fetched at run time.
+                                 Unset or empty (default): only the snapshot bundled below (EDGE_SNAPSHOT)
+                                 is used and nothing is fetched. The snapshot is also the fallback when
+                                 the fetch fails.
 
           URL of an object = CDN URL prefix + (object key with the S3 prefix removed).
           The distribution is found through the CloudFront API by the URL prefix's host name:
@@ -224,11 +230,11 @@ Resources:
           import urllib.request
 
           import boto3
+          from botocore.exceptions import WaiterError
 
           logger = logging.getLogger()
           logger.setLevel(logging.INFO)
 
-          DEFAULT_EDGE_LOCATIONS_URL = "https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json"
           EDGE_LIST_TTL_SECONDS = 3600
           DISTRIBUTION_LIST_TTL_SECONDS = 3600
           CONCURRENCY = 16
@@ -245,12 +251,16 @@ Resources:
           USER_AGENT = "cloudfront-prewarm/1.0"
           NODE_CODE_RE = re.compile(r"^[A-Z]{3}[0-9]{1,3}-[A-Z0-9]{1,6}$")
           CF_DOMAIN_RE = re.compile(r"^([a-z0-9]+)\.cloudfront\.net$")
+          # Edge list feeds file Hong Kong and Taiwan cities under "China"; list them as their own
+          # places. Keep _place() in sync with refresh_edge_snapshot.py.
+          HONG_KONG_CITY = "hongkong"
+          TAIWAN_CITY_SUFFIX = ", TW"
 
           # BEGIN EDGE SNAPSHOT: generated by refresh_edge_snapshot.py, do not edit by hand.
           # Source: https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json
-          EDGE_SNAPSHOT_DATE = "2026-11-04"
+          EDGE_SNAPSHOT_DATE = "2026-11-23"
           EDGE_SNAPSHOT = {
-              "Argentina": {"Buenos Aires": ["EZE50-P3"]},
+              "Argentina": {"Buenos Aires": ["EZE50-P3", "EZE50-P9"]},
               "Australia": {
                   "Brisbane": ["BNE50-P2"],
                   "Melbourne": ["MEL51-P2"],
@@ -259,11 +269,7 @@ Resources:
               },
               "Austria": {"Vienna": ["VIE50-P1", "VIE50-P3"]},
               "Belgium": {"Brussels": ["BRU50-P2", "BRU51-P1"]},
-              "Brazil": {
-                  "Fortaleza": ["FOR50-P6"],
-                  "Rio de Janeiro": ["GIG52-P2"],
-                  "São Paulo": ["GRU1-P5", "GRU1-P8", "GRU3-P10"],
-              },
+              "Brazil": {"Fortaleza": ["FOR50-P6"], "Rio de Janeiro": ["GIG52-P2"], "São Paulo": ["GRU1-P8"]},
               "Bulgaria": {"Sofia": ["SOF50-P1", "SOF50-P2"]},
               "Canada": {
                   "Calgary, AB": ["YYC51-P2"],
@@ -272,35 +278,26 @@ Resources:
                   "Vancouver, BC": ["YVR52-P1", "YVR52-P2", "YVR52-P3"],
               },
               "Chile": {"Santiago": ["SCL51-P6"]},
-              "China": {
-                  "Hong Kong": ["HKG1-P1", "HKG1-P2", "HKG54-P2", "HKG61-P1", "HKG62-P1"],
-                  "Taipei, TW": ["TPE53-P3", "TPE53-P4"],
-              },
               "Colombia": {"Bogotá": ["BOG50-P2"]},
               "Croatia": {"Zagreb": ["ZAG51-P1", "ZAG51-P2"]},
               "Czech Republic": {"Prague": ["PRG50-P1", "PRG50-P2"]},
               "Denmark": {"Copenhagen": ["CPH50-P2", "CPH50-P3"]},
               "Egypt": {"Cairo": ["CAI50-P1", "CAI50-P2"]},
-              "Finland": {"Helsinki": ["HEL51-P1", "HEL51-P3", "HEL51-P6", "HEL51-P8"]},
-              "France": {
-                  "Marseille": ["MRS53-P1", "MRS53-P3", "MRS53-P4"],
-                  "Paris": ["CDG52-P3", "CDG54-P1", "CDG54-P2"],
-              },
+              "Finland": {"Helsinki": ["HEL51-P1", "HEL51-P3", "HEL51-P8"]},
+              "France": {"Marseille": ["MRS53-P3"], "Paris": ["CDG52-P3", "CDG54-P1", "CDG54-P2"]},
               "Germany": {
                   "Berlin": ["TXL50-P1", "TXL52-P4"],
                   "Düsseldorf": ["DUS51-P2", "DUS51-P6"],
-                  "Frankfurt": [
-                      "FRA56-P5", "FRA56-P6", "FRA56-P9", "FRA56-P10", "FRA56-P12", "FRA56-P15", "FRA56-P16",
-                      "FRA60-P3", "FRA60-P10",
-                  ],
+                  "Frankfurt": ["FRA56-P9", "FRA56-P12", "FRA56-P15", "FRA60-P3", "FRA60-P10"],
                   "Hamburg": ["HAM50-P4", "HAM50-P5", "HAM50-P6"],
                   "Munich": ["MUC50-P1", "MUC50-P5"],
               },
               "Greece": {"Athens": ["ATH51-P1", "ATH51-P2"]},
+              "Hong Kong": {"Hong Kong": ["HKG1-P1", "HKG54-P2", "HKG61-P1", "HKG62-P1"]},
               "Hungary": {"Budapest": ["BUD50-P1", "BUD50-P2", "BUD50-P3"]},
               "India": {
-                  "Bangalore": ["BLR50-P1", "BLR50-P3", "BLR50-P4"],
-                  "Chennai": ["MAA50-P1", "MAA50-P2", "MAA51-P1", "MAA51-P2"],
+                  "Bangalore": ["BLR50-P1", "BLR50-P4"],
+                  "Chennai": ["MAA51-P1", "MAA51-P2"],
                   "Hyderabad": ["HYD57-P3", "HYD57-P7"],
                   "Kolkata": ["CCU50-P3", "CCU50-P5", "CCU50-P6"],
                   "Mumbai": ["BOM54-P2", "BOM78-P7", "BOM78-P8", "BOM78-P10", "BOM78-P11"],
@@ -310,67 +307,65 @@ Resources:
               "Indonesia": {"Jakarta": ["CGK50-P3", "CGK51-P2", "CGK60-P1", "CGK61-P1"]},
               "Ireland": {"Dublin": ["DUB2-P1", "DUB56-P1"]},
               "Israel": {"Tel Aviv": ["TLV55-P2", "TLV55-P3"]},
-              "Italy": {"Milan": ["MXP53-P3", "MXP53-P8", "MXP63-P8"], "Rome": ["FCO50-P2", "FCO50-P9"]},
+              "Italy": {"Milan": ["MXP53-P8", "MXP63-P8"], "Rome": ["FCO50-P2", "FCO50-P10"]},
               "Japan": {
                   "Osaka": ["KIX82-P4", "KIX82-P5", "KIX82-P7"],
                   "Tokyo": ["NRT12-P5", "NRT20-P1", "NRT20-P3", "NRT57-P9"],
               },
-              "Kenya": {"Nairobi": ["NBO50-P2"]},
+              "Kenya": {"Nairobi": ["NBO50-P1", "NBO50-P2"]},
               "Malaysia": {"Kuala Lumpur": ["KUL50-P2", "KUL51-P1", "KUL62-P1"]},
-              "Mexico": {"Querétaro": ["QRO50-P2", "QRO51-P6", "QRO53-P2"]},
+              "Mexico": {"Querétaro": ["QRO50-P2", "QRO51-P6", "QRO53-P1"]},
               "Netherlands": {"Amsterdam": ["AMS1-P3", "AMS58-P2", "AMS58-P3", "AMS58-P4", "AMS58-P5"]},
               "New Zealand": {"Auckland": ["AKL53-P1", "AKL53-P3"]},
               "Nigeria": {"Lagos": ["LOS50-P2", "LOS50-P3", "LOS50-P5"]},
               "Norway": {"Oslo": ["OSL50-P3", "OSL51-P2"]},
-              "Oman": {"Muscat": ["MCT50-P2", "MCT50-P3"]},
+              "Oman": {"Muscat": ["MCT50-P2", "MCT50-P3", "MCT50-P5"]},
               "Peru": {"Lima": ["LIM50-P5"]},
-              "Philippines": {"Manila": ["MNL51-P2", "MNL52-P1", "MNL52-P3", "MNL52-P4"]},
+              "Philippines": {"Manila": ["MNL52-P1", "MNL52-P4"]},
               "Poland": {"Warsaw": ["WAW51-P2", "WAW51-P5"]},
               "Portugal": {"Lisbon": ["LIS50-P2"]},
-              "Qatar": {"Doha": ["DOH50-P2"]},
-              "Romania": {"Bucharest": ["OTP50-P1", "OTP50-P2", "OTP50-P3"]},
+              "Qatar": {"Doha": ["DOH50-P1", "DOH50-P2"]},
+              "Romania": {"Bucharest": ["OTP50-P1", "OTP50-P3"]},
               "Saudi Arabia": {"Jeddah": ["JED50-P5"], "Riyadh": ["RUH50-P1", "RUH50-P2"]},
-              "Singapore": {"Singapore": ["SIN2-P7", "SIN2-P10", "SIN3-P1", "SIN3-P3", "SIN52-P1"]},
+              "Singapore": {"Singapore": ["SIN2-P7", "SIN2-P10", "SIN3-P1", "SIN52-P1"]},
               "South Africa": {"Cape Town": ["CPT51-P1", "CPT51-P2"], "Johannesburg": ["JNB51-P4"]},
               "South Korea": {"Seoul": ["ICN53-P1", "ICN57-P6", "ICN80-P3", "ICN80-P4"]},
               "Spain": {
                   "Barcelona": ["BCN50-P1", "BCN50-P2"],
-                  "Madrid": ["MAD53-P6", "MAD53-P7", "MAD56-P1", "MAD56-P2", "MAD56-P3"],
+                  "Madrid": ["MAD53-P7", "MAD56-P1", "MAD56-P2", "MAD56-P3"],
               },
-              "Sweden": {"Stockholm": ["ARN53-P2", "ARN53-P4", "ARN56-P4"]},
+              "Sweden": {"Stockholm": ["ARN56-P4"]},
               "Switzerland": {"Zürich": ["ZRH52-P1"]},
-              "Thailand": {"Bangkok": ["BKK50-P2", "BKK50-P3", "BKK50-P4", "BKK51-P1", "BKK51-P3"]},
-              "Turkey": {"Istanbul": ["IST52-P1", "IST52-P2"]},
-              "United Arab Emirates": {"Dubai": ["DXB52-P1", "DXB53-P1", "DXB53-P3"]},
-              "United Kingdom": {
-                  "London": ["LHR3-P4", "LHR5-P3", "LHR82-P3"],
-                  "Manchester": ["MAN51-P3", "MAN51-P5", "MAN51-P6"],
-              },
+              "Taiwan": {"Taipei": ["TPE53-P3", "TPE53-P4"]},
+              "Thailand": {"Bangkok": ["BKK50-P2", "BKK51-P1", "BKK51-P3"]},
+              "Turkey": {"Istanbul": ["IST50-P2", "IST52-P1", "IST52-P2"]},
+              "United Arab Emirates": {"Dubai": ["DXB52-P1", "DXB52-P3", "DXB53-P1"]},
+              "United Kingdom": {"London": ["LHR3-P4", "LHR5-P3", "LHR82-P3"], "Manchester": ["MAN51-P3", "MAN51-P5"]},
               "United States": {
                   "Atlanta, GA": ["ATL58-P1", "ATL58-P10", "ATL58-P11"],
-                  "Boston, MA": ["BOS50-P5", "BOS50-P6", "BOS50-P8"],
+                  "Boston, MA": ["BOS50-P6", "BOS50-P8"],
                   "Chicago, IL": ["ORD56-P4", "ORD56-P15", "ORD58-P7", "ORD58-P14"],
-                  "Columbus, OH": ["CMH51-P1", "CMH68-P2"],
-                  "Dallas/Fort Worth, TX": ["DFW56-P7", "DFW57-P2", "DFW57-P6"],
-                  "Denver, CO": ["DEN52-P1", "DEN53-P6"],
-                  "Hillsboro, OR": ["HIO52-P1", "HIO52-P3", "HIO52-P4"],
+                  "Columbus, OH": ["CMH51-P1", "CMH68-P2", "CMH68-P5"],
+                  "Dallas/Fort Worth, TX": ["DFW56-P7", "DFW57-P2", "DFW57-P6", "DFW59-P8"],
+                  "Denver, CO": ["DEN52-P1", "DEN52-P3", "DEN53-P4", "DEN53-P6"],
+                  "Hillsboro, OR": ["HIO52-P4"],
                   "Houston, TX": ["IAH51-P2", "IAH51-P3"],
                   "Kansas City, MO": ["MCI50-P2", "MCI50-P3", "MCI50-P4"],
                   "Los Angeles, CA": ["LAX53-P1", "LAX54-P9", "LAX54-P11"],
-                  "Miami, FL": ["MIA3-P2", "MIA3-P5", "MIA3-P7", "MIA50-P6"],
+                  "Miami, FL": ["MIA3-P3", "MIA3-P5", "MIA3-P7", "MIA50-P6"],
                   "Minneapolis, MN": ["MSP50-P1", "MSP50-P3", "MSP50-P6"],
                   "Nashville, TN": ["BNA50-P1", "BNA50-P2"],
                   "New York, NY": ["JFK50-P6", "JFK50-P7", "JFK50-P9", "JFK50-P12", "JFK52-P8"],
                   "Philadelphia, PA": ["PHL51-P1", "PHL51-P3", "PHL51-P4"],
                   "Phoenix, AZ": ["PHX50-P2"],
-                  "Pittsburgh, PA": ["PIT50-P1"],
+                  "Pittsburgh, PA": ["PIT50-P1", "PIT50-P2"],
                   "Salt Lake City, UT": ["SLC52-P1", "SLC52-P2"],
-                  "San Francisco, CA": ["SFO5-P1", "SFO53-P1", "SFO53-P2", "SFO53-P9", "SFO53-P12"],
-                  "Seattle, WA": ["SEA73-P1", "SEA900-P5", "SEA900-P6", "SEA900-P9", "SEA900-P10"],
+                  "San Francisco, CA": ["SFO5-P1", "SFO53-P1", "SFO53-P9", "SFO53-P12"],
+                  "Seattle, WA": ["SEA73-P1", "SEA900-P1", "SEA900-P5", "SEA900-P10"],
                   "Tampa, FL": ["TPA52-P1", "TPA52-P4"],
                   "Washington D. C.": ["IAD55-P10", "IAD89-P3"],
               },
-              "Vietnam": {"Hanoi": ["HAN50-P3", "HAN51-P1", "HAN51-P2"], "Ho Chi Minh City": ["SGN50-P3", "SGN50-P4"]},
+              "Vietnam": {"Hanoi": ["HAN50-P3", "HAN51-P1"], "Ho Chi Minh City": ["SGN50-P2", "SGN50-P3", "SGN50-P4"]},
           }
           # END EDGE SNAPSHOT
 
@@ -439,8 +434,7 @@ Resources:
               """Reduce the edge list JSON to {country: {city: [node codes]}}."""
               locations = {}
               for location in data["edge_locations"]:
-                  country = str(location.get("country", "")).strip()
-                  city = str(location.get("city", "")).strip()
+                  country, city = _place(location.get("country", ""), location.get("city", ""))
                   codes = locations.setdefault(country, {}).setdefault(city, [])
                   for node in location.get("active_nodes") or []:
                       code = str(node.get("code", "")).upper()
@@ -457,6 +451,19 @@ Resources:
               return "".join(ch for ch in text if ch.isalnum()).casefold()
 
 
+          def _place(country, city):
+              """(country, city) of an edge list entry: "Hong Kong" -> ("Hong Kong", "Hong Kong"),
+              "Taipei, TW" or "Taipei" -> ("Taiwan", "Taipei"), anything else unchanged."""
+              country, city = str(country).strip(), str(city).strip()
+              if _normalize_name(city) == HONG_KONG_CITY:
+                  return "Hong Kong", "Hong Kong"
+              if city.upper().endswith(TAIWAN_CITY_SUFFIX):
+                  return "Taiwan", city[:-len(TAIWAN_CITY_SUFFIX)].strip()
+              if _normalize_name(city) == "taipei":
+                  return "Taiwan", city
+              return country, city
+
+
           def _city_names(city):
               """Accepted spellings of a city: "Dallas/Fort Worth, TX" also matches
               "Dallas/Fort Worth", "Dallas" and "Fort Worth"; "Taipei, TW" also matches "Taipei"."""
@@ -467,14 +474,16 @@ Resources:
           def _edge_list():
               """Return ({country: {city: [node codes]}}, source).
 
-              Order of preference: the list fetched from EDGE_LOCATIONS_URL in the last hour,
-              a fresh fetch, the last list fetched successfully, the snapshot bundled in this file.
+              Without EDGE_LOCATIONS_URL, the snapshot bundled in this file. With it: the list
+              fetched in the last hour, a fresh fetch, the last list fetched successfully, the snapshot.
               """
+              url = os.environ.get("EDGE_LOCATIONS_URL", "").strip()
+              if not url:
+                  return EDGE_SNAPSHOT, f"snapshot {EDGE_SNAPSHOT_DATE}"
               now = time.time()
               cached = _edge_cache["data"]
               if cached is not None and now - _edge_cache["fetched_at"] < EDGE_LIST_TTL_SECONDS:
                   return cached, "url"
-              url = os.environ.get("EDGE_LOCATIONS_URL") or DEFAULT_EDGE_LOCATIONS_URL
               if not url.startswith("https://"):
                   raise ValueError("EDGE_LOCATIONS_URL must be an https URL")
               try:
@@ -568,14 +577,19 @@ Resources:
               )["Invalidation"]
               started = time.monotonic()
               _log("invalidation_created", distribution=dist_id, invalidation=invalidation["Id"], paths=paths)
-              # Leave enough time to prewarm after the wait.
-              max_wait = min(INVALIDATION_MAX_WAIT_SECONDS, context.get_remaining_time_in_millis() / 1000 / 2)
-              while invalidation["Status"] != "Completed":
-                  if time.monotonic() - started > max_wait:
-                      raise TimeoutError(f"invalidation {invalidation['Id']} on {dist_id} did not complete in {int(max_wait)}s")
-                  # Intentional poll interval: fixed, and the total wait is capped by max_wait above.
-                  time.sleep(INVALIDATION_POLL_SECONDS)  # nosemgrep
-                  invalidation = _cloudfront.get_invalidation(DistributionId=dist_id, Id=invalidation["Id"])["Invalidation"]
+              if invalidation["Status"] != "Completed":
+                  # Leave enough time to prewarm after the wait.
+                  max_wait = min(INVALIDATION_MAX_WAIT_SECONDS, context.get_remaining_time_in_millis() / 1000 / 2)
+                  try:
+                      _cloudfront.get_waiter("invalidation_completed").wait(
+                          DistributionId=dist_id, Id=invalidation["Id"],
+                          WaiterConfig={"Delay": INVALIDATION_POLL_SECONDS,
+                                        "MaxAttempts": max(1, int(max_wait // INVALIDATION_POLL_SECONDS))})
+                  except WaiterError as exc:
+                      if "Max attempts exceeded" not in str(exc):
+                          raise
+                      raise TimeoutError(f"invalidation {invalidation['Id']} on {dist_id} did not complete "
+                                         f"in {int(max_wait)}s") from exc
               _log("invalidation_completed", distribution=dist_id, invalidation=invalidation["Id"],
                    seconds=round(time.monotonic() - started, 1))
 

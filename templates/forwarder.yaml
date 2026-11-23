@@ -121,12 +121,14 @@ Resources:
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${EnableEventBridgeLogGroup}
               - Effect: Allow
                 Action: [s3:GetBucketLocation, s3:GetBucketNotification, s3:PutBucketNotification]
-                # One bucket ARN per bucket name. Fn::Join needs a literal delimiter.
+                # One bucket ARN per bucket name. An Fn::Join delimiter must be a literal, so it
+                # cannot hold ${AWS::Partition}; IAM accepts a wildcard partition segment instead,
+                # and a role only ever acts in its own partition.
                 Resource: !Split
                   - ";"
                   - !Sub
-                    - arn:aws:s3:::${Joined}
-                    - Joined: !Join [";arn:aws:s3:::", !Split [";", !Ref BucketNames]]
+                    - arn:*:s3:::${Joined}
+                    - Joined: !Join [";arn:*:s3:::", !Split [";", !Ref BucketNames]]
 
   EnableEventBridgeFunction:
     # checkov:skip=CKV_AWS_115:Custom resource, invoked only by CloudFormation once per stack create or update

@@ -5,28 +5,28 @@
       "Sid": "CloudFormationStacks",
       "Effect": "Allow",
       "Action": "cloudformation:*",
-      "Resource": "arn:aws:cloudformation:*:*:stack/cdn-prewarm*/*"
+      "Resource": "arn:*:cloudformation:*:*:stack/cdn-prewarm*/*"
     },
     {
       "Sid": "LambdaFunctions",
       "Effect": "Allow",
       "Action": "lambda:*",
-      "Resource": "arn:aws:lambda:*:*:function:cdn-prewarm*"
+      "Resource": "arn:*:lambda:*:*:function:cdn-prewarm*"
     },
     {
       "Sid": "EventBridgeBusAndRules",
       "Effect": "Allow",
       "Action": "events:*",
       "Resource": [
-        "arn:aws:events:*:*:event-bus/cdn-prewarm*",
-        "arn:aws:events:*:*:rule/cdn-prewarm*"
+        "arn:*:events:*:*:event-bus/cdn-prewarm*",
+        "arn:*:events:*:*:rule/cdn-prewarm*"
       ]
     },
     {
       "Sid": "LogGroups",
       "Effect": "Allow",
       "Action": "logs:*",
-      "Resource": "arn:aws:logs:*:*:log-group:/aws/lambda/cdn-prewarm*"
+      "Resource": "arn:*:logs:*:*:log-group:/aws/lambda/cdn-prewarm*"
     },
     {
       "Sid": "AccountWideLookups",
@@ -55,13 +55,13 @@
         "iam:TagRole",
         "iam:UntagRole"
       ],
-      "Resource": "arn:aws:iam::*:role/cdn-prewarm*"
+      "Resource": "arn:*:iam::*:role/cdn-prewarm*"
     },
     {
       "Sid": "PassThoseRolesToLambdaAndEventBridgeOnly",
       "Effect": "Allow",
       "Action": "iam:PassRole",
-      "Resource": "arn:aws:iam::*:role/cdn-prewarm*",
+      "Resource": "arn:*:iam::*:role/cdn-prewarm*",
       "Condition": {
         "StringEquals": {
           "iam:PassedToService": ["lambda.amazonaws.com", "events.amazonaws.com"]

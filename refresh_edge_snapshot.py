@@ -1,9 +1,10 @@
 """Refresh the edge node snapshot bundled in src/prewarm.py.
 
-The Lambda uses the snapshot when the edge node list URL cannot be fetched.
-Only country -> city -> node codes is kept. Run `python3 build.py` afterwards.
+The Lambda uses the snapshot unless the EdgeLocationsUrl parameter is set, and as the
+fallback when that URL cannot be fetched. Only country -> city -> node codes is kept;
+Hong Kong and Taiwan cities are listed as their own places. Run `python3 build.py` afterwards.
 
-Usage: python3 refresh_edge_snapshot.py [edge-list-url]
+Usage: python3 refresh_edge_snapshot.py <edge-list-url>
 """
 
 import datetime
@@ -11,14 +12,34 @@ import json
 import pathlib
 import re
 import sys
+import unicodedata
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent
 SOURCE = ROOT / "src" / "prewarm.py"
-DEFAULT_URL = "https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json"
 NODE_CODE_RE = re.compile(r"^[A-Z]{3}[0-9]{1,3}-[A-Z0-9]{1,6}$")  # same as prewarm.py
 BLOCK_RE = re.compile(r"^# BEGIN EDGE SNAPSHOT.*?^# END EDGE SNAPSHOT\n", re.S | re.M)
 LINE_WIDTH = 110
+HONG_KONG_CITY = "hongkong"  # same as prewarm.py
+TAIWAN_CITY_SUFFIX = ", TW"
+
+
+def _normalize_name(name):
+    """Same as prewarm.py: ignore case, accents and punctuation."""
+    text = unicodedata.normalize("NFKD", str(name))
+    return "".join(ch for ch in text if ch.isalnum()).casefold()
+
+
+def _place(country, city):
+    """Same as prewarm.py: list Hong Kong and Taiwan cities as their own places."""
+    country, city = str(country).strip(), str(city).strip()
+    if _normalize_name(city) == HONG_KONG_CITY:
+        return "Hong Kong", "Hong Kong"
+    if city.upper().endswith(TAIWAN_CITY_SUFFIX):
+        return "Taiwan", city[:-len(TAIWAN_CITY_SUFFIX)].strip()
+    if _normalize_name(city) == "taipei":
+        return "Taiwan", city
+    return country, city
 
 
 def fetch(url):
@@ -30,8 +51,7 @@ def fetch(url):
         data = json.load(response)
     locations = {}
     for location in data["edge_locations"]:
-        country = str(location.get("country", "")).strip()
-        city = str(location.get("city", "")).strip()
+        country, city = _place(location.get("country", ""), location.get("city", ""))
         codes = locations.setdefault(country, {}).setdefault(city, [])
         for node in location.get("active_nodes") or []:
             code = str(node.get("code", "")).upper()
@@ -88,7 +108,9 @@ def render(locations, url):
 
 
 def main():
-    url = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_URL
+    if len(sys.argv) != 2:
+        sys.exit(__doc__.strip().splitlines()[-1])
+    url = sys.argv[1]
     locations = fetch(url)
     if not locations:
         sys.exit("edge list contains no nodes; snapshot not changed")

@@ -53,19 +53,22 @@ Parameters:
     Type: String
     Description: >-
       Countries and/or cities whose edge nodes are prewarmed, separated by ';', in any
-      mix. A country selects all its nodes, a city only that city's nodes. Country and
-      city names come from https://www.feitsui.com/en/article/3 ; case, accents and the
-      state suffix are optional (Montreal matches the accented "Montreal, QC" entry).
+      mix. A country selects all its nodes, a city only that city's nodes. Names are
+      those of the edge node snapshot in the Lambda code (see the README); case, accents
+      and the state suffix are optional (Montreal matches the accented "Montreal, QC" entry).
       Example: Tokyo;Germany;United States
     Default: Tokyo;Germany;United States
     AllowedPattern: ".+"
   EdgeLocationsUrl:
     Type: String
     Description: >-
-      JSON list of CloudFront edge nodes, fetched by the Lambda at run time. If it cannot
-      be fetched, the Lambda uses the node snapshot bundled in its code.
-    Default: https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json
-    AllowedPattern: "^https://.+"
+      Optional. Leave empty to use only the edge node snapshot bundled in the Lambda code
+      (no run-time download). Set to an https URL of a JSON edge node list to fetch it at
+      run time instead; the snapshot remains the fallback. See the README for the format
+      and a third-party source.
+    Default: ""
+    AllowedPattern: "^(https://.+)?$"
+    ConstraintDescription: "Empty, or an https:// URL"
   InvalidateBeforePrewarm:
     Type: String
     Description: >-
@@ -77,12 +80,11 @@ Parameters:
     Type: String
     Description: >-
       Maximum number of files prewarmed at the same time (reserved concurrency of the
-      prewarm Lambda). Limits CloudFront API calls, edge traffic and the share of the
+      prewarm Lambda). Caps CloudFront API calls, edge data transfer and the share of the
       account's Lambda concurrency during bulk uploads. Extra events wait in the Lambda
-      queue for up to 6 hours. The account must keep at least 100 unreserved
-      concurrency; if the deployment fails on that, lower the value or leave it empty
-      for no limit.
-    Default: "50"
+      queue and are dropped after 6 hours (see Cost and limits in the README). The
+      account must keep at least 100 unreserved concurrency. Empty removes the cap.
+    Default: "10"
     AllowedPattern: "^([1-9][0-9]{0,3})?$"
     ConstraintDescription: "A number from 1 to 9999, or empty for no limit"
   EventBusName:
@@ -148,6 +150,8 @@ Resources:
                 Action: cloudfront:ListDistributions
                 Resource: "*"
               - Effect: Allow
+                # The Lambda finds each distribution at run time from the CdnUrlPrefixes host
+                # names, so the IDs are not known to this template; scoped to this account.
                 Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
                 Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
 
