@@ -12,7 +12,7 @@ Metadata:
       - Label: {default: Edge nodes}
         Parameters: [EdgeCountriesOrCities, EdgeLocationsUrl]
       - Label: {default: Behaviour}
-        Parameters: [InvalidateBeforePrewarm, EventBusName, LogRetentionDays]
+        Parameters: [InvalidateBeforePrewarm, ReservedConcurrency, EventBusName, LogRetentionDays]
     ParameterLabels:
       S3Paths: {default: S3 paths}
       CdnUrlPrefixes: {default: CDN URL prefixes}
@@ -20,6 +20,7 @@ Metadata:
       EdgeCountriesOrCities: {default: Edge countries or cities}
       EdgeLocationsUrl: {default: Edge node list URL}
       InvalidateBeforePrewarm: {default: Invalidate before prewarm}
+      ReservedConcurrency: {default: Maximum concurrent prewarms}
       EventBusName: {default: Central event bus name}
       LogRetentionDays: {default: Log retention (days)}
 
@@ -72,6 +73,18 @@ Parameters:
       otherwise the edges keep serving the old copy.
     AllowedValues: ["true", "false"]
     Default: "true"
+  ReservedConcurrency:
+    Type: String
+    Description: >-
+      Maximum number of files prewarmed at the same time (reserved concurrency of the
+      prewarm Lambda). Limits CloudFront API calls, edge traffic and the share of the
+      account's Lambda concurrency during bulk uploads. Extra events wait in the Lambda
+      queue for up to 6 hours. The account must keep at least 100 unreserved
+      concurrency; if the deployment fails on that, lower the value or leave it empty
+      for no limit.
+    Default: "50"
+    AllowedPattern: "^([1-9][0-9]{0,3})?$"
+    ConstraintDescription: "A number from 1 to 9999, or empty for no limit"
   EventBusName:
     Type: String
     Description: >-
@@ -85,6 +98,9 @@ Parameters:
     Default: 30
     AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
 
+Conditions:
+  LimitConcurrency: !Not [!Equals [!Ref ReservedConcurrency, ""]]
+
 Resources:
   EventBus:
     Type: AWS::Events::EventBus
@@ -92,13 +108,24 @@ Resources:
       Name: !Ref EventBusName
 
   PrewarmLogGroup:
+    # checkov:skip=CKV_AWS_158:Logs hold only object keys, URLs and edge results; encrypted at rest by CloudWatch Logs by default
     Type: AWS::Logs::LogGroup
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: Logs hold only object keys, URLs and edge results; encrypted at rest by CloudWatch Logs by default
     Properties:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-prewarm
       RetentionInDays: !Ref LogRetentionDays
 
   PrewarmRole:
     Type: AWS::IAM::Role
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W11
+            reason: cloudfront:ListDistributions does not support resource-level permissions; all other actions are scoped
     Properties:
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
@@ -112,8 +139,11 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: [logs:CreateLogStream, logs:PutLogEvents]
-                Resource: !GetAtt PrewarmLogGroup.Arn
+                # CreateLogGroup only lets Lambda recreate this log group if someone deletes it.
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource:
+                  - !GetAtt PrewarmLogGroup.Arn
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${PrewarmLogGroup}
               - Effect: Allow
                 Action: cloudfront:ListDistributions
                 Resource: "*"
@@ -121,8 +151,18 @@ Resources:
                 Action: [cloudfront:CreateInvalidation, cloudfront:GetInvalidation]
                 Resource: !Sub arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/*
 
+  # No dead-letter queue: a failed invocation is retried twice by Lambda (asynchronous
+  # invocation default), then dropped. Every failure is in the log group.
   PrewarmFunction:
+    # checkov:skip=CKV_AWS_116:Prewarming is best effort; Lambda retries twice and every failure is logged
+    # checkov:skip=CKV_AWS_117:Calls only public CloudFront edges and APIs; a VPC would add NAT cost and no isolation
+    # checkov:skip=CKV_AWS_173:Environment holds only paths, URLs and place names, no secrets; encrypted with the AWS managed key
     Type: AWS::Lambda::Function
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Calls only public CloudFront edges and APIs; a VPC would add NAT cost and no isolation
     Properties:
       FunctionName: !Sub ${AWS::StackName}-prewarm
       Description: Prewarms CloudFront edge nodes when objects are created or overwritten in S3.
@@ -131,6 +171,7 @@ Resources:
       Handler: index.handler
       MemorySize: 1024
       Timeout: 900
+      ReservedConcurrentExecutions: !If [LimitConcurrency, !Ref ReservedConcurrency, !Ref AWS::NoValue]
       Role: !GetAtt PrewarmRole.Arn
       LoggingConfig:
         LogGroup: !Ref PrewarmLogGroup
@@ -147,8 +188,6 @@ Resources:
         ZipFile: |
           #INLINE prewarm.py
 
-  # No dead-letter queue: a failed invocation is retried twice by Lambda (asynchronous
-  # invocation default), then dropped. Every failure is in the log group.
   PrewarmRule:
     Type: AWS::Events::Rule
     Properties:

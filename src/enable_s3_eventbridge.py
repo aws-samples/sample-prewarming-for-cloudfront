@@ -29,7 +29,8 @@ def _respond(event, context, status, reason="", data=None):
     }).encode()
     request = urllib.request.Request(event["ResponseURL"], data=body, method="PUT",
                                      headers={"Content-Type": "", "Content-Length": str(len(body))})
-    with urllib.request.urlopen(request, timeout=30):
+    # The URL is checked to be https in handler() before any work is done.
+    with urllib.request.urlopen(request, timeout=30):  # nosec B310  # nosemgrep
         pass
 
 
@@ -51,6 +52,9 @@ def _enable(bucket, region):
 
 def handler(event, context):
     logger.info(json.dumps({k: v for k, v in event.items() if k != "ResponseURL"}))
+    # CloudFormation always sends a pre-signed https S3 URL; refuse anything else (e.g. file://).
+    if not str(event.get("ResponseURL", "")).startswith("https://"):
+        raise ValueError("ResponseURL is not an https URL; not a CloudFormation request")
     try:
         data = {}
         if event["RequestType"] in ("Create", "Update"):

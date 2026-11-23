@@ -52,6 +52,7 @@ List parameters are separated by `;`.
 | EdgeCountriesOrCities | Countries and/or cities, for example `Tokyo;Germany;United States` (the default). |
 | FilePatterns | File name patterns to prewarm, for example `*.mp4;*.m3u8`. Default `*`. |
 | InvalidateBeforePrewarm | Default `true`. Keep it on if files get overwritten. |
+| ReservedConcurrency | Maximum number of files prewarmed at the same time. Default `50`; empty means no limit. During bulk uploads, extra events wait in the Lambda queue for up to 6 hours. |
 | EdgeLocationsUrl | Edge location list. Default `https://static.cloudping.cloud/cdn/cloudfront-edge-locations.json`, with a built-in snapshot as fallback. |
 
 The prewarm URL is the URL prefix plus the rest of the key: with `bucket-a/static/` → `https://www.example.com/static/`, uploading `static/js/app.js` prewarms `https://www.example.com/static/js/app.js`. The Lambda finds the distribution by the URL's domain.

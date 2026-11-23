@@ -86,8 +86,14 @@ Resources:
           RoleArn: !GetAtt ForwardRole.Arn
 
   EnableEventBridgeLogGroup:
+    # checkov:skip=CKV_AWS_158:Logs hold only bucket names and request results; encrypted at rest by CloudWatch Logs by default
     Type: AWS::Logs::LogGroup
     Condition: EnableEventBridge
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W84
+            reason: Logs hold only bucket names and request results; encrypted at rest by CloudWatch Logs by default
     Properties:
       LogGroupName: !Sub /aws/lambda/${AWS::StackName}-enable-s3-eventbridge
       RetentionInDays: 30
@@ -108,8 +114,11 @@ Resources:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action: [logs:CreateLogStream, logs:PutLogEvents]
-                Resource: !GetAtt EnableEventBridgeLogGroup.Arn
+                # CreateLogGroup only lets Lambda recreate this log group if someone deletes it.
+                Action: [logs:CreateLogGroup, logs:CreateLogStream, logs:PutLogEvents]
+                Resource:
+                  - !GetAtt EnableEventBridgeLogGroup.Arn
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:${EnableEventBridgeLogGroup}
               - Effect: Allow
                 Action: [s3:GetBucketLocation, s3:GetBucketNotification, s3:PutBucketNotification]
                 # One bucket ARN per bucket name. Fn::Join needs a literal delimiter.
@@ -120,8 +129,18 @@ Resources:
                     - Joined: !Join [";arn:aws:s3:::", !Split [";", !Ref BucketNames]]
 
   EnableEventBridgeFunction:
+    # checkov:skip=CKV_AWS_115:Custom resource, invoked only by CloudFormation once per stack create or update
+    # checkov:skip=CKV_AWS_116:Custom resource; CloudFormation waits for its response, so a DLQ would never be read
+    # checkov:skip=CKV_AWS_117:Calls only the public S3 API and the CloudFormation response URL; no VPC resources
     Type: AWS::Lambda::Function
     Condition: EnableEventBridge
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W89
+            reason: Calls only the public S3 API and the CloudFormation response URL; no VPC resources
+          - id: W92
+            reason: Custom resource, invoked only by CloudFormation once per stack create or update
     Properties:
       FunctionName: !Sub ${AWS::StackName}-enable-s3-eventbridge
       Description: Custom resource that turns on S3 to EventBridge notifications.

@@ -23,8 +23,10 @@ LINE_WIDTH = 110
 
 def fetch(url):
     """Return {country: {city: [node codes]}}, sorted, without cities that have no nodes."""
+    if not url.startswith("https://"):
+        sys.exit(f"edge list URL must be https: {url}")
     request = urllib.request.Request(url, headers={"User-Agent": "cloudfront-prewarm/1.0"})
-    with urllib.request.urlopen(request, timeout=30) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:  # nosec B310  # nosemgrep
         data = json.load(response)
     locations = {}
     for location in data["edge_locations"]:

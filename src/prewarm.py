@@ -291,7 +291,8 @@ def _edge_list():
         raise ValueError("EDGE_LOCATIONS_URL must be an https URL")
     try:
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        # The URL is checked to be https above, so file:// and other schemes are refused.
+        with urllib.request.urlopen(request, timeout=10) as response:  # nosec B310  # nosemgrep
             data = _nodes_by_location(json.loads(response.read()))
     except Exception as exc:
         if cached is not None:
@@ -384,7 +385,8 @@ def invalidate_and_wait(dist_id, paths, caller_reference, context):
     while invalidation["Status"] != "Completed":
         if time.monotonic() - started > max_wait:
             raise TimeoutError(f"invalidation {invalidation['Id']} on {dist_id} did not complete in {int(max_wait)}s")
-        time.sleep(INVALIDATION_POLL_SECONDS)
+        # Intentional poll interval: fixed, and the total wait is capped by max_wait above.
+        time.sleep(INVALIDATION_POLL_SECONDS)  # nosemgrep
         invalidation = _cloudfront.get_invalidation(DistributionId=dist_id, Id=invalidation["Id"])["Invalidation"]
     _log("invalidation_completed", distribution=dist_id, invalidation=invalidation["Id"],
          seconds=round(time.monotonic() - started, 1))
@@ -392,6 +394,8 @@ def invalidate_and_wait(dist_id, paths, caller_reference, context):
 
 def _connection(target, ip):
     if target["scheme"] == "https":
+        # _ssl_context is ssl.create_default_context(): certificate and host name are verified.
+        # nosemgrep
         conn = http.client.HTTPSConnection(target["host"], target["port"], timeout=CONNECT_TIMEOUT, context=_ssl_context)
     else:
         conn = http.client.HTTPConnection(target["host"], target["port"], timeout=CONNECT_TIMEOUT)
