@@ -1,6 +1,7 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  CloudFront edge prewarm, forwarder stack. Deploy in every region that has watched
+  Edge prewarming for Amazon CloudFront, forwarder stack. Deploy in
+  every region that has watched
   buckets, including the central region. Forwards S3 Object Created events from the
   region's default event bus to the central event bus.
 

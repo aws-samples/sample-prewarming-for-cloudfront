@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  CloudFront edge prewarm, central stack. Creates the central event bus and the
+  Edge prewarming for Amazon CloudFront, central stack. Creates the central event bus and the
   prewarm Lambda. Deploy once, in the region chosen as the hub. S3 events from
   every region reach this bus through the forwarder stack.
 
