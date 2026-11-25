@@ -1,5 +1,7 @@
 # Edge prewarming for Amazon CloudFront
 
+English | [简体中文](README.zh-CN.md)
+
 This sample prewarms Amazon CloudFront edge caches when content in Amazon S3 changes. When an object is created or overwritten under a configured S3 path, an AWS Lambda function downloads it once from every edge location in the countries or cities you choose, so those locations cache the new version before users ask for it.
 
 > **Disclaimer.** This is sample code for demonstration and learning. Do your own security, cost and operational review and testing before using it in production.
